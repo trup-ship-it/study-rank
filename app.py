@@ -12,16 +12,10 @@ st.set_page_config(layout="wide", page_title="OnEducation Study Rank")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ---------------------------------------------------------
-# 2. 데이터 처리 함수 (스마트 캐싱 + 에러 방어 적용)
+# 2. 데이터 처리 함수 (숫자/문자 강제 통일)
 # ---------------------------------------------------------
 
 def get_data(force_reload=False):
-    """
-    구글 시트 데이터 읽기
-    - 평소에는: 캐시된 데이터를 써서 API 횟수를 아낌 (TTL=15)
-    - force_reload=True일 때: 강제로 최신 데이터를 가져옴
-    """
-    # 세션에 마지막 데이터 저장소 만들기
     if 'last_df' not in st.session_state:
         st.session_state['last_df'] = pd.DataFrame(columns=[
             "student_id", "name", "daily_seconds", "monthly_seconds", 
@@ -29,54 +23,44 @@ def get_data(force_reload=False):
         ])
 
     try:
-        # 강제 새로고침이 필요하면 캐시 초기화
         if force_reload:
             conn.reset()
         
-        # 15초 동안은 저장된 거 쓰고, 15초 지나면 새로 가져옴 (API 보호)
         df = conn.read(ttl=15)
         
         expected_cols = ["student_id", "name", "daily_seconds", "monthly_seconds", 
                          "is_active", "start_time", "last_update"]
 
-        # 데이터가 비정상이면(컬럼 깨짐 등) 빈 표 리턴
         if df.empty or 'student_id' not in df.columns:
-            # 만약 읽어왔는데 비어있다면, 혹시 모르니 마지막 성공 데이터를 반환 (방어 코드)
             if not st.session_state['last_df'].empty:
                 return st.session_state['last_df']
             return pd.DataFrame(columns=expected_cols)
         
-        # 데이터 타입 안전 변환
+        # [핵심 수정] 1111이든 1111.0이든 무조건 깔끔한 문자 "1111"로 만듦
+        df['student_id'] = df['student_id'].astype(str).apply(lambda x: x.replace('.0', '').strip())
+        
+        # 나머지 숫자 처리
         df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
         df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
         df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-        df['student_id'] = df['student_id'].astype(str).apply(lambda x: x.split('.')[0])
         
-        # 성공적으로 가져왔으면 '마지막 데이터'로 저장해둠 (에러 날 때 쓰려고)
         st.session_state['last_df'] = df.copy()
-        
         return df
         
     except Exception as e:
-        # 구글이 429 에러(차단)를 보내면, 당황하지 않고 저장해둔 데이터를 보여줌
-        # -> 이렇게 해야 공부시간이 0으로 리셋되지 않음!
         if not st.session_state['last_df'].empty:
             return st.session_state['last_df']
-        
         return pd.DataFrame(columns=["student_id", "name", "daily_seconds", "monthly_seconds", 
                                      "is_active", "start_time", "last_update"])
 
 def update_sheet(df):
     try:
         conn.update(data=df)
-        # 저장 후에는 캐시를 날려줘야 바로 반영됨
-        conn.reset()
+        conn.reset() # 저장 후 캐시 즉시 초기화
     except Exception as e:
         st.error(f"저장 실패: {e}")
 
 def check_date_reset():
-    """날짜 변경 체크"""
-    # 여기서는 굳이 강제 로딩 안 해도 됨
     df = get_data(force_reload=False)
     if df.empty: return
 
@@ -91,11 +75,9 @@ def check_date_reset():
             is_changed = True
             d_sec = row['daily_seconds']
             m_sec = row['monthly_seconds']
-            
             new_monthly = m_sec + d_sec
             if not last_update or last_update[:7] != current_month:
                 new_monthly = 0
-            
             df.at[idx, 'daily_seconds'] = 0
             df.at[idx, 'monthly_seconds'] = new_monthly
             df.at[idx, 'last_update'] = today_str
@@ -104,27 +86,21 @@ def check_date_reset():
         update_sheet(df)
 
 # ---------------------------------------------------------
-# 3. 기능 함수 (여기는 버튼 누를 때라 즉시 반영 필요)
+# 3. 기능 함수
 # ---------------------------------------------------------
 def register_student(name, student_id):
-    # 등록 전엔 최신 데이터 확실히 확인 (force_reload=True)
     df = get_data(force_reload=True)
-    str_id = str(student_id).strip()
+    clean_id = str(student_id).strip()
     
-    if not df.empty and str_id in df['student_id'].values:
-        st.warning(f"이미 존재하는 비밀번호({str_id})입니다.")
+    # 중복 체크
+    if not df.empty and clean_id in df['student_id'].values:
+        st.warning(f"이미 존재하는 비밀번호({clean_id})입니다.")
         return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
-    
     new_data = pd.DataFrame([{
-        "student_id": str_id, 
-        "name": name, 
-        "daily_seconds": 0, 
-        "monthly_seconds": 0, 
-        "is_active": 0, 
-        "start_time": None, 
-        "last_update": today_str
+        "student_id": clean_id, "name": name, "daily_seconds": 0, 
+        "monthly_seconds": 0, "is_active": 0, "start_time": None, "last_update": today_str
     }])
     
     updated_df = pd.concat([df, new_data], ignore_index=True)
@@ -132,14 +108,17 @@ def register_student(name, student_id):
     st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
 
 def check_in_out(input_id):
-    # 입퇴실 때도 최신 데이터 확인 필수
     df = get_data(force_reload=True)
-    target_id = str(input_id).strip()
+    clean_input = str(input_id).strip()
     
-    mask = df['student_id'] == target_id
+    # [디버깅용] 못 찾으면 저장된 번호 리스트를 에러 메시지에 띄워줌
+    mask = df['student_id'] == clean_input
     
     if not mask.any():
-        st.error(f"등록되지 않은 비밀번호입니다.")
+        # 현재 등록된 번호들을 확인해봅니다.
+        st.error(f"입력하신 '{clean_input}' 번호가 없습니다.")
+        # (잠깐 디버깅용: 보안상 나중엔 지우세요)
+        st.caption(f"📌 현재 등록된 번호들: {df['student_id'].tolist()}")
         return
 
     idx = df[mask].index[0]
@@ -159,7 +138,7 @@ def check_in_out(input_id):
             st_time = str(row['start_time'])
             try: start_dt = datetime.strptime(st_time, "%Y-%m-%d %H:%M:%S.%f")
             except: start_dt = datetime.strptime(st_time, "%Y-%m-%d %H:%M:%S")
-                
+            
             duration = (now - start_dt).seconds
             df.at[idx, 'daily_seconds'] += duration
             df.at[idx, 'is_active'] = 0
@@ -175,7 +154,7 @@ def check_in_out(input_id):
             st.error("기록 오류로 강제 퇴실 처리되었습니다.")
 
 # ---------------------------------------------------------
-# 4. 화면 구성
+# 4. UI 구성
 # ---------------------------------------------------------
 check_date_reset()
 
@@ -197,6 +176,18 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ 모드 선택")
     mode = st.radio("화면 모드", ["📺 대시보드 모드 (모니터용)", "✅ 출석체크 모드 (데스크용)"])
+    
+    # [여기 보세요!] 등록된 명단을 사이드바에서 확인 가능
+    if mode == "✅ 출석체크 모드 (데스크용)":
+        st.write("---")
+        with st.expander("📋 현재 등록된 학생 명단 확인", expanded=True):
+            df_debug = get_data(force_reload=False)
+            if not df_debug.empty:
+                # 비밀번호와 이름을 표로 보여줍니다.
+                st.dataframe(df_debug[['name', 'student_id']], hide_index=True)
+            else:
+                st.warning("데이터가 비어있거나 불러오지 못했습니다.")
+                
     st.write("---")
     st.caption("🔒 신규 등록은 관리자 비밀번호가 필요합니다.")
 
@@ -205,7 +196,6 @@ if mode == "📺 대시보드 모드 (모니터용)":
     if os.path.exists("image_0.png"):
         st.image("image_0.png", use_container_width=True)
     
-    # 대시보드는 평소에 API 안 부르고 캐시된거 쓰다가 15초마다 갱신 (force_reload=False)
     df = get_data(force_reload=False)
     
     if not df.empty:
@@ -219,8 +209,6 @@ if mode == "📺 대시보드 모드 (모니터용)":
                     st_t = str(row['start_time'])
                     try: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S.%f")
                     except: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S")
-                    
-                    # 여기서 실시간 시간 계산은 Python이 하므로 API 안 씀
                     elapsed = (now - s_dt).total_seconds()
                     d += elapsed
                 except: pass
@@ -242,48 +230,4 @@ if mode == "📺 대시보드 모드 (모니터용)":
                 st.markdown(f"""<div class="rank-card"><div><span class="big-emoji">{emoji}</span> <b>{r['name']}</b> {badge}</div><div style='font-family:monospace; color:#4CAF50;'>{ts//3600}h {(ts%3600)//60}m {ts%60:02d}s</div></div>""", unsafe_allow_html=True)
 
         with c2:
-            st.markdown("<div class='section-title'>📅 이달의 명예의 전당 (Monthly)</div>", unsafe_allow_html=True)
-            for i, r in df.sort_values(by='real_monthly', ascending=False).reset_index(drop=True).iterrows():
-                if r['real_monthly'] < 1: continue
-                rank = i + 1
-                ts = int(r['real_monthly'])
-                mark = "👑" if rank == 1 else f"{rank}."
-                bg = "rgba(255,215,0,0.1)" if rank == 1 else "transparent"
-                st.markdown(f"""<div style="padding:12px; border-bottom:1px solid #eee; background:{bg}; display:flex; justify-content:space-between;"><div><b>{mark}</b> {r['name']}</div><div>{ts//3600}시간 {(ts%3600)//60}분</div></div>""", unsafe_allow_html=True)
-    else:
-        st.info("등록된 학생이 없습니다.")
-    time.sleep(1)
-    st.rerun()
-
-# === 출석체크 모드 ===
-elif mode == "✅ 출석체크 모드 (데스크용)":
-    st.title("✅ OnEducation 데스크 관리")
-    
-    c1, c2 = st.columns([1, 1])
-    
-    with c1:
-        st.subheader("👋 입실 / 퇴실 처리")
-        with st.form("check_in"):
-            student_id = st.text_input("학생 비밀번호 입력", type="password", max_chars=4)
-            if st.form_submit_button("확인", type="primary", use_container_width=True):
-                if student_id:
-                    check_in_out(student_id)
-                    time.sleep(1) # 처리 대기
-                    st.rerun()
-
-    with c2:
-        st.subheader("🔒 신규 학생 등록 (관리자)")
-        admin_pw = st.text_input("관리자 비밀번호 입력", type="password")
-        
-        if "admin_password" in st.secrets and admin_pw == st.secrets["admin_password"]:
-            st.success("관리자 인증 완료 ✨")
-            with st.container(border=True):
-                new_name = st.text_input("학생 이름")
-                new_student_id = st.text_input("학생 비밀번호 (4자리)", key="new_student_id", max_chars=4)
-                if st.button("등록하기", use_container_width=True):
-                    if new_name and new_student_id:
-                        register_student(new_name, new_student_id)
-                        time.sleep(1) # 처리 대기
-                        st.rerun()
-        elif admin_pw:
-            st.error("비밀번호가 틀렸습니다.")
+            st.markdown("<div class='section-
