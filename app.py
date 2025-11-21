@@ -1,181 +1,96 @@
-import streamlit as st
-from streamlit_gsheets import GSheetsConnection
-import pandas as pd
-from datetime import datetime
-import time
-import os
-
-# ---------------------------------------------------------
-# 1. 기본 설정
-# ---------------------------------------------------------
-st.set_page_config(layout="wide", page_title="OnEducation Study Rank")
-
-# 구글 시트 연결
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-# ---------------------------------------------------------
-# 2. 데이터 처리 함수
-# ---------------------------------------------------------
-
-def get_data():
-    """구글 시트 데이터 읽기"""
-    try:
-        df = conn.read(ttl=5)
-        if df.empty or len(df.columns) < 7:
-            return pd.DataFrame(columns=[
-                "phone", "name", "daily_seconds", "monthly_seconds", 
-                "is_active", "start_time", "last_update"
-            ])
-        
-        df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
-        df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
-        df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-        
-        # 전화번호 정제
-        df['phone'] = df['phone'].astype(str)
-        df['phone'] = df['phone'].str.replace(r'\.0$', '', regex=True)
-        df['phone'] = df['phone'].str.strip()
-        
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-def update_sheet(df):
-    try:
-        conn.update(data=df)
-    except Exception:
-        pass
-
-def check_date_reset():
-    """자정 초기화 로직"""
-    df = get_data()
-    if df.empty: return
-
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    current_month = datetime.now().strftime("%Y-%m")
-    is_changed = False
-    
-    for idx, row in df.iterrows():
-        last_update = str(row['last_update']) if pd.notna(row['last_update']) else ""
-        
-        if last_update != today_str:
-            is_changed = True
-            d_sec = row['daily_seconds']
-            m_sec = row['monthly_seconds']
-            
-            new_monthly = m_sec + d_sec
-            if not last_update or last_update[:7] != current_month:
-                new_monthly = 0
-            
-            df.at[idx, 'daily_seconds'] = 0
-            df.at[idx, 'monthly_seconds'] = new_monthly
-            df.at[idx, 'last_update'] = today_str
-            
-    if is_changed:
-        update_sheet(df)
-
-# ---------------------------------------------------------
-# 3. 기능 함수
-# ---------------------------------------------------------
-def register_student(name, phone):
-    clean_phone = str(phone).strip()
-    df = get_data()
-    
-    if not df.empty and clean_phone in df['phone'].values:
-        st.warning(f"이미 등록된 번호입니다: {clean_phone}")
-        return
-
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    new_data = pd.DataFrame([{
-        "phone": clean_phone, "name": name, "daily_seconds": 0, 
-        "monthly_seconds": 0, "is_active": 0, "start_time": None, "last_update": today_str
-    }])
-    
-    updated_df = pd.concat([df, new_data], ignore_index=True)
-    update_sheet(updated_df)
-    st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
-
-def check_in_out(phone):
-    clean_phone = str(phone).strip()
-    df = get_data()
-    mask = df['phone'] == clean_phone
-    
-    if not mask.any():
-        st.error(f"등록되지 않은 번호입니다 ({clean_phone}).")
-        return
-
-    idx = df[mask].index[0]
-    row = df.loc[idx]
-    now = datetime.now()
-    today_str = now.strftime("%Y-%m-%d")
-    
-    if row['is_active'] == 0: # 입실
-        df.at[idx, 'is_active'] = 1
-        df.at[idx, 'start_time'] = str(now)
-        df.at[idx, 'last_update'] = today_str
-        update_sheet(df)
-        st.success(f"🔥 [{row['name']}]님 열공 시작!")
-        
-    else: # 퇴실
-        try:
-            st_time = str(row['start_time'])
-            try: start_dt = datetime.strptime(st_time, "%Y-%m-%d %H:%M:%S.%f")
-            except: start_dt = datetime.strptime(st_time, "%Y-%m-%d %H:%M:%S")
-            
-            duration = (now - start_dt).seconds
-            df.at[idx, 'daily_seconds'] += duration
-            df.at[idx, 'is_active'] = 0
-            df.at[idx, 'start_time'] = None
-            df.at[idx, 'last_update'] = today_str
-            
-            update_sheet(df)
-            h, m = duration // 3600, (duration % 3600) // 60
-            st.info(f"👋 [{row['name']}]님 고생했어요! ({h}시간 {m}분 추가)")
-        except:
-            df.at[idx, 'is_active'] = 0
-            update_sheet(df)
-            st.error("오류 처리됨")
-
-# ---------------------------------------------------------
-# 4. UI 구성
-# ---------------------------------------------------------
-check_date_reset()
-
-st.markdown("""
-    <style>
-    .rank-card { 
-        padding: 15px; border-radius: 15px; margin-bottom: 12px; 
-        background-color: var(--secondary-background-color); 
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    .status-active { color: #4CAF50; font-weight: bold; border: 1px solid #4CAF50; padding: 2px 6px; border-radius: 5px; font-size: 0.7em; }
-    .status-rest { color: #888; font-weight: bold; border: 1px solid #888; padding: 2px 6px; border-radius: 5px; font-size: 0.7em; }
-    .section-title { font-size: 1.5em; font-weight: bold; margin-top: 20px; margin-bottom: 15px; }
-    .big-emoji { font-size: 1.2em; }
-    /* 스트림릿 기본 실행 애니메이션 숨기기 */
-    .stApp > header {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
-
-with st.sidebar:
-    st.header("⚙️ 모드 선택")
-    mode = st.radio("화면 모드", ["📺 대시보드 모드 (모니터용)", "✅ 출석체크 모드 (데스크용)"])
-    st.write("---")
-    st.caption("🔒 신규 등록은 관리자 비밀번호가 필요합니다.")
-
-# ---------------------------------------------------------
-# 화면 로직
-# ---------------------------------------------------------
-
 if mode == "📺 대시보드 모드 (모니터용)":
-    # [수정됨] 전체 화면을 감싸는 빈 상자를 먼저 만듭니다.
-    # 이 안에 이미지와 랭킹을 모두 넣어야 잔상이 남지 않습니다.
-    main_placeholder = st.empty()
+    # 로고 (루프 밖에서 1회 로드)
+    if os.path.exists("image_0.png"):
+        st.image("image_0.png", use_container_width=True)
     
+    # === [핵심] 깜빡임 방지 컨테이너 ===
+    dashboard_placeholder = st.empty()
+
     while True:
-        # 데이터를 먼저 읽어옵니다
+        # 1. 데이터 가져오기
         df = get_data()
         
-        # 상자 안을 비우고 새로 그립니다
-        with main
+        # 2. 상자 안에서 UI 그리기 (컬럼 제거 -> 수직 배치로 변경)
+        with dashboard_placeholder.container():
+            if not df.empty:
+                now = datetime.now()
+                real_daily, real_monthly = [], []
+                
+                # 실시간 시간 계산
+                for idx, row in df.iterrows():
+                    d, m = float(row['daily_seconds']), float(row['monthly_seconds'])
+                    if row['is_active'] == 1 and pd.notna(row['start_time']):
+                        try:
+                            st_t = str(row['start_time'])
+                            try: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S.%f")
+                            except: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S")
+                            elapsed = (now - s_dt).total_seconds()
+                            d += elapsed
+                        except: pass
+                    real_daily.append(d)
+                    real_monthly.append(m + d)
+
+                df['real_daily'] = real_daily
+                df['real_monthly'] = real_monthly
+
+                # ------------------------------------------------
+                # [1] 상단: 오늘의 공부왕 (Daily)
+                # ------------------------------------------------
+                st.markdown("<div class='section-title'>☀️ 오늘의 공부왕 (Daily)</div>", unsafe_allow_html=True)
+                
+                # 1등부터 3등까지만 크게 보여주거나, 전체를 리스트로 보여줌
+                sorted_daily = df.sort_values(by='real_daily', ascending=False).reset_index(drop=True)
+                
+                # 보기 좋게 2열로 나누어 카드 배치 (일간 랭킹 내부에서만 나눔)
+                d_col1, d_col2 = st.columns(2)
+                
+                for i, r in sorted_daily.iterrows():
+                    if r['real_daily'] < 1: continue
+                    
+                    rank = i + 1
+                    ts = int(r['real_daily'])
+                    emoji = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"{rank}위"
+                    badge = f"<span class='status-active'>🔥 열공중</span>" if r['is_active'] else f"<span class='status-rest'>💤 휴식</span>"
+                    
+                    card_html = f"""
+                    <div class="rank-card">
+                        <div style="font-size:1.1em;"><span class="big-emoji">{emoji}</span> <b>{r['name']}</b> {badge}</div>
+                        <div style='font-family:monospace; color:#4CAF50; font-size:1.2em; font-weight:bold; margin-top:5px;'>
+                            {ts//3600}h {(ts%3600)//60}m {ts%60:02d}s
+                        </div>
+                    </div>
+                    """
+                    
+                    # 홀수/짝수 번갈아 가며 배치하여 공간 활용
+                    if i % 2 == 0:
+                        with d_col1: st.markdown(card_html, unsafe_allow_html=True)
+                    else:
+                        with d_col2: st.markdown(card_html, unsafe_allow_html=True)
+
+                # ------------------------------------------------
+                # 구분선
+                # ------------------------------------------------
+                st.write("---") 
+
+                # ------------------------------------------------
+                # [2] 하단: 이달의 명예의 전당 (Monthly)
+                # ------------------------------------------------
+                st.markdown("<div class='section-title'>📅 이달의 명예의 전당 (Monthly)</div>", unsafe_allow_html=True)
+                
+                sorted_monthly = df.sort_values(by='real_monthly', ascending=False).reset_index(drop=True)
+                
+                # 월간 데이터는 깔끔한 리스트 형태로 하단에 쭉 나열
+                for i, r in sorted_monthly.iterrows():
+                    if r['real_monthly'] < 1: continue
+                    
+                    rank = i + 1
+                    ts = int(r['real_monthly'])
+                    mark = "👑" if rank == 1 else f"{rank}."
+                    # 1등 강조 색상 (다크모드에서도 잘 보이게 조정)
+                    bg = "rgba(255, 215, 0, 0.15)" if rank == 1 else "rgba(128, 128, 128, 0.05)"
+                    border = "1px solid #FFD700" if rank == 1 else "1px solid rgba(128,128,128,0.1)"
+                    
+                    st.markdown(f"""
+                    <div style="padding:12px 20px; margin-bottom:8px; border-radius:10px; background:{bg}; border:{border}; display:flex; justify-content:space-between; align-items:center;">
+                        <div style="font-size:1.1em;"><b>{mark}</b> &nbsp; {r['name']}</div>
+                        <div style="font-family:monospace; font-weight:bold; font-size:1.1em;">
