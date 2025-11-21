@@ -18,33 +18,23 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ---------------------------------------------------------
 
 def get_data():
-    """구글 시트 데이터 읽기 (캐시 5초)"""
-    try:
-        df = conn.read(ttl=5)
-        if df.empty or len(df.columns) < 7:
-            return pd.DataFrame(columns=[
-                "phone", "name", "daily_seconds", "monthly_seconds", 
-                "is_active", "start_time", "last_update"
-            ])
-        
-        # --- [수정된 부분 시작] ---
-        # 데이터 타입 정리 (NaN 값을 0으로 채우기)
-        df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
-        df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
-        df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-
-        # 전화번호 처리 핵심 로직:
-        # 1. 문자로 변환
-        # 2. 소수점(.0)이 붙어있다면 제거
-        # 3. 앞뒤 공백 제거
-        df['phone'] = df['phone'].apply(lambda x: str(x).split('.')[0].strip())
-        # --- [수정된 부분 끝] ---
-        
-        return df
-    except Exception as e:
-        # 디버깅을 위해 에러 메시지를 출력해보는 것이 좋습니다.
-        st.error(f"데이터 로드 중 오류 발생: {e}") 
-        return pd.DataFrame()
+    """구글 시트 데이터 읽기 (캐시 5초)"""
+    try:
+        df = conn.read(ttl=5)
+        if df.empty or len(df.columns) < 7:
+            return pd.DataFrame(columns=[
+                "phone", "name", "daily_seconds", "monthly_seconds", 
+                "is_active", "start_time", "last_update"
+            ])
+        
+        df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
+        df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
+        df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
+        df['phone'] = df['phone'].astype(str)
+        
+        return df
+    except Exception as e:
+        return pd.DataFrame()
 
 def update_sheet(df):
     """구글 시트 업데이트"""
@@ -251,16 +241,4 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
         elif admin_pw:
             st.error("비밀번호가 틀렸습니다.")
 
-
-def register_student(name, phone):
-    # ... (기존 코드) ...
-    
-    updated_df = pd.concat([df, new_data], ignore_index=True)
-    update_sheet(updated_df)
-    
-    # [추가] 캐시를 비워서 즉시 반영되도록 함
-    st.cache_data.clear() 
-    conn.reset() # 연결 재설정 (확실한 갱신)
-    
-    st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
-
+이 코드에서 학생이 등록하고 그걸 입퇴실에 등록하면 등로가힞 않느 거라고 뜸
