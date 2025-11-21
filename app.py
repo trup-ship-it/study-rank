@@ -21,16 +21,18 @@ def get_data():
     """구글 시트 데이터 읽기 (캐시 5초)"""
     try:
         df = conn.read(ttl=5)
+        # 데이터가 비어있거나 초기 상태일 때 컬럼 강제 설정 (phone -> student_id로 변경됨)
         if df.empty or len(df.columns) < 7:
             return pd.DataFrame(columns=[
-                "phone", "name", "daily_seconds", "monthly_seconds", 
+                "student_id", "name", "daily_seconds", "monthly_seconds", 
                 "is_active", "start_time", "last_update"
             ])
         
         df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
         df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
         df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-        df['phone'] = df['phone'].astype(str)
+        # ID는 문자열로 처리 (0000 등 앞자리 0 보존)
+        df['student_id'] = df['student_id'].astype(str)
         
         return df
     except Exception as e:
@@ -74,15 +76,16 @@ def check_date_reset():
 # ---------------------------------------------------------
 # 3. 핵심 기능
 # ---------------------------------------------------------
-def register_student(name, phone):
+def register_student(name, student_id):
     df = get_data()
-    if not df.empty and str(phone) in df['phone'].values:
-        st.warning("이미 등록된 번호입니다.")
+    # 중복 ID 체크 (비밀번호가 곧 ID이므로 중복 불가)
+    if not df.empty and str(student_id) in df['student_id'].values:
+        st.warning("이미 사용 중인 비밀번호입니다. 다른 번호를 입력해주세요.")
         return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     new_data = pd.DataFrame([{
-        "phone": str(phone), "name": name, "daily_seconds": 0, 
+        "student_id": str(student_id), "name": name, "daily_seconds": 0, 
         "monthly_seconds": 0, "is_active": 0, "start_time": None, "last_update": today_str
     }])
     
@@ -90,12 +93,12 @@ def register_student(name, phone):
     update_sheet(updated_df)
     st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
 
-def check_in_out(phone):
+def check_in_out(student_id):
     df = get_data()
-    mask = df['phone'] == str(phone)
+    mask = df['student_id'] == str(student_id)
     
     if not mask.any():
-        st.error("등록되지 않은 번호입니다. 관리자에게 문의하세요.")
+        st.error("등록되지 않은 비밀번호입니다. 관리자에게 문의하세요.")
         return
 
     idx = df[mask].index[0]
@@ -216,10 +219,12 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
     with c1:
         st.subheader("👋 입실 / 퇴실 처리")
         with st.form("check_in"):
-            phone = st.text_input("비밀번호 (4자리)", max_chars=4)
+            # [보안 수정] type="password" 추가 (입력 시 점으로 표시됨)
+            student_id = st.text_input("학생 비밀번호 입력", type="password", max_chars=4)
+            
             if st.form_submit_button("확인", type="primary", use_container_width=True):
-                if phone:
-                    check_in_out(phone)
+                if student_id:
+                    check_in_out(student_id)
                     time.sleep(1)
                     st.rerun()
 
@@ -232,10 +237,12 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
             st.success("관리자 인증 완료 ✨")
             with st.container(border=True):
                 new_name = st.text_input("학생 이름")
-                new_phone = st.text_input("학생이 쓸 비밀번호", key="new_phone", max_chars=4)
+                # [보안 수정] "전화번호" -> "학생 비밀번호" (type="password"는 안 함. 관리자는 확인해야 하니까)
+                new_student_id = st.text_input("학생 비밀번호 (4자리)", key="new_student_id", max_chars=4)
+                
                 if st.button("등록하기", use_container_width=True):
-                    if new_name and new_phone:
-                        register_student(new_name, new_phone)
+                    if new_name and new_student_id:
+                        register_student(new_name, new_student_id)
                         time.sleep(1)
                         st.rerun()
         elif admin_pw:
