@@ -9,50 +9,46 @@ import os
 # 1. 기본 설정
 # ---------------------------------------------------------
 st.set_page_config(layout="wide", page_title="OnEducation Study Rank")
-
-# 구글 시트 연결 객체 생성
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ---------------------------------------------------------
-# 2. 데이터 처리 함수 (여기가 강력해졌습니다!)
+# 2. 데이터 처리 함수 (강력해진 버전)
 # ---------------------------------------------------------
 
 def get_data():
-    """구글 시트 데이터 읽기"""
+    """구글 시트 데이터 읽기 (캐시 끔: 실시간 반영)"""
     try:
-        # ttl=0으로 설정하여 캐시를 끄고 즉시 시트를 다시 읽어옵니다.
+        # ttl=0 : 캐시를 사용하지 않고 매번 구글 시트에서 새로 가져옵니다.
         df = conn.read(ttl=0)
         
         expected_cols = ["student_id", "name", "daily_seconds", "monthly_seconds", 
                          "is_active", "start_time", "last_update"]
 
-        # [핵심 수정] 
-        # 데이터가 비어있거나, 중요한 컬럼(student_id)이 없으면 무조건 초기화합니다.
-        # 옛날 컬럼(phone)이 남아있어도 여기서 걸러집니다.
         if df.empty or 'student_id' not in df.columns:
             return pd.DataFrame(columns=expected_cols)
         
-        # 데이터 타입 변환
+        # [핵심] 모든 데이터를 안전하게 처리
         df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
         df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
         df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-        df['student_id'] = df['student_id'].astype(str)
+        
+        # [핵심] student_id를 무조건 문자열로 변환 (1234.0 -> "1234")
+        # 소수점(.0)이 붙어있으면 떼버리고 문자로 만듭니다.
+        df['student_id'] = df['student_id'].astype(str).apply(lambda x: x.split('.')[0])
         
         return df
     except Exception as e:
-        # 에러 나면 그냥 빈 표를 줘서 앱이 안 꺼지게 방어
         return pd.DataFrame(columns=["student_id", "name", "daily_seconds", "monthly_seconds", 
                                      "is_active", "start_time", "last_update"])
 
 def update_sheet(df):
-    """구글 시트 업데이트"""
     try:
         conn.update(data=df)
     except Exception as e:
-        st.error(f"저장 중 오류: {e}")
+        st.error(f"저장 실패: {e}")
 
 def check_date_reset():
-    """날짜 변경 시 초기화 로직"""
+    """날짜 변경 체크"""
     df = get_data()
     if df.empty: return
 
@@ -80,33 +76,45 @@ def check_date_reset():
         update_sheet(df)
 
 # ---------------------------------------------------------
-# 3. 핵심 기능
+# 3. 기능 함수
 # ---------------------------------------------------------
 def register_student(name, student_id):
     df = get_data()
-    # 중복 ID 체크
-    if not df.empty and str(student_id) in df['student_id'].values:
-        st.warning("이미 사용 중인 비밀번호입니다. 다른 번호를 입력해주세요.")
+    # 문자열로 변환해서 비교
+    str_id = str(student_id).strip()
+    
+    if not df.empty and str_id in df['student_id'].values:
+        st.warning(f"이미 존재하는 비밀번호({str_id})입니다.")
         return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # 새로 추가할 때는 앞에 ' (작은따옴표)를 붙여서 엑셀이 문자로 인식하게 유도할 수도 있지만
+    # 여기서는 그냥 저장하고 읽을 때 처리합니다.
     new_data = pd.DataFrame([{
-        "student_id": str(student_id), "name": name, "daily_seconds": 0, 
-        "monthly_seconds": 0, "is_active": 0, "start_time": None, "last_update": today_str
+        "student_id": str_id, 
+        "name": name, 
+        "daily_seconds": 0, 
+        "monthly_seconds": 0, 
+        "is_active": 0, 
+        "start_time": None, 
+        "last_update": today_str
     }])
     
     updated_df = pd.concat([df, new_data], ignore_index=True)
     update_sheet(updated_df)
     st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
 
-def check_in_out(student_id):
+def check_in_out(input_id):
     df = get_data()
+    # 입력값도 공백 제거하고 문자로 확실하게 변환
+    target_id = str(input_id).strip()
     
-    # 여기서 에러가 났던 건데, 위에서 get_data가 해결해줍니다.
-    mask = df['student_id'] == str(student_id)
+    # 데이터프레임에서 찾기
+    mask = df['student_id'] == target_id
     
     if not mask.any():
-        st.error("등록되지 않은 비밀번호입니다. 관리자에게 문의하세요.")
+        st.error(f"등록되지 않은 비밀번호입니다. (입력값: {target_id})")
         return
 
     idx = df[mask].index[0]
@@ -139,10 +147,10 @@ def check_in_out(student_id):
         except:
             df.at[idx, 'is_active'] = 0
             update_sheet(df)
-            st.error("오류가 있어 강제 퇴실 처리했습니다.")
+            st.error("기록 오류로 강제 퇴실 처리되었습니다.")
 
 # ---------------------------------------------------------
-# 4. UI 구성
+# 4. 화면 구성
 # ---------------------------------------------------------
 check_date_reset()
 
@@ -231,7 +239,7 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
             if st.form_submit_button("확인", type="primary", use_container_width=True):
                 if student_id:
                     check_in_out(student_id)
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
 
     with c2:
@@ -246,7 +254,7 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
                 if st.button("등록하기", use_container_width=True):
                     if new_name and new_student_id:
                         register_student(new_name, new_student_id)
-                        time.sleep(1)
+                        time.sleep(0.5)
                         st.rerun()
         elif admin_pw:
             st.error("비밀번호가 틀렸습니다.")
