@@ -12,44 +12,72 @@ st.set_page_config(layout="wide", page_title="OnEducation Study Rank")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ---------------------------------------------------------
-# 2. 데이터 처리 함수 (강력해진 버전)
+# 2. 데이터 처리 함수 (스마트 캐싱 + 에러 방어 적용)
 # ---------------------------------------------------------
 
-def get_data():
-    """구글 시트 데이터 읽기 (캐시 끔: 실시간 반영)"""
+def get_data(force_reload=False):
+    """
+    구글 시트 데이터 읽기
+    - 평소에는: 캐시된 데이터를 써서 API 횟수를 아낌 (TTL=15)
+    - force_reload=True일 때: 강제로 최신 데이터를 가져옴
+    """
+    # 세션에 마지막 데이터 저장소 만들기
+    if 'last_df' not in st.session_state:
+        st.session_state['last_df'] = pd.DataFrame(columns=[
+            "student_id", "name", "daily_seconds", "monthly_seconds", 
+            "is_active", "start_time", "last_update"
+        ])
+
     try:
-        # ttl=0 : 캐시를 사용하지 않고 매번 구글 시트에서 새로 가져옵니다.
-        df = conn.read(ttl=0)
+        # 강제 새로고침이 필요하면 캐시 초기화
+        if force_reload:
+            conn.reset()
+        
+        # 15초 동안은 저장된 거 쓰고, 15초 지나면 새로 가져옴 (API 보호)
+        df = conn.read(ttl=15)
         
         expected_cols = ["student_id", "name", "daily_seconds", "monthly_seconds", 
                          "is_active", "start_time", "last_update"]
 
+        # 데이터가 비정상이면(컬럼 깨짐 등) 빈 표 리턴
         if df.empty or 'student_id' not in df.columns:
+            # 만약 읽어왔는데 비어있다면, 혹시 모르니 마지막 성공 데이터를 반환 (방어 코드)
+            if not st.session_state['last_df'].empty:
+                return st.session_state['last_df']
             return pd.DataFrame(columns=expected_cols)
         
-        # [핵심] 모든 데이터를 안전하게 처리
+        # 데이터 타입 안전 변환
         df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
         df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
         df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-        
-        # [핵심] student_id를 무조건 문자열로 변환 (1234.0 -> "1234")
-        # 소수점(.0)이 붙어있으면 떼버리고 문자로 만듭니다.
         df['student_id'] = df['student_id'].astype(str).apply(lambda x: x.split('.')[0])
         
+        # 성공적으로 가져왔으면 '마지막 데이터'로 저장해둠 (에러 날 때 쓰려고)
+        st.session_state['last_df'] = df.copy()
+        
         return df
+        
     except Exception as e:
+        # 구글이 429 에러(차단)를 보내면, 당황하지 않고 저장해둔 데이터를 보여줌
+        # -> 이렇게 해야 공부시간이 0으로 리셋되지 않음!
+        if not st.session_state['last_df'].empty:
+            return st.session_state['last_df']
+        
         return pd.DataFrame(columns=["student_id", "name", "daily_seconds", "monthly_seconds", 
                                      "is_active", "start_time", "last_update"])
 
 def update_sheet(df):
     try:
         conn.update(data=df)
+        # 저장 후에는 캐시를 날려줘야 바로 반영됨
+        conn.reset()
     except Exception as e:
         st.error(f"저장 실패: {e}")
 
 def check_date_reset():
     """날짜 변경 체크"""
-    df = get_data()
+    # 여기서는 굳이 강제 로딩 안 해도 됨
+    df = get_data(force_reload=False)
     if df.empty: return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -76,11 +104,11 @@ def check_date_reset():
         update_sheet(df)
 
 # ---------------------------------------------------------
-# 3. 기능 함수
+# 3. 기능 함수 (여기는 버튼 누를 때라 즉시 반영 필요)
 # ---------------------------------------------------------
 def register_student(name, student_id):
-    df = get_data()
-    # 문자열로 변환해서 비교
+    # 등록 전엔 최신 데이터 확실히 확인 (force_reload=True)
+    df = get_data(force_reload=True)
     str_id = str(student_id).strip()
     
     if not df.empty and str_id in df['student_id'].values:
@@ -89,8 +117,6 @@ def register_student(name, student_id):
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # 새로 추가할 때는 앞에 ' (작은따옴표)를 붙여서 엑셀이 문자로 인식하게 유도할 수도 있지만
-    # 여기서는 그냥 저장하고 읽을 때 처리합니다.
     new_data = pd.DataFrame([{
         "student_id": str_id, 
         "name": name, 
@@ -106,15 +132,14 @@ def register_student(name, student_id):
     st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
 
 def check_in_out(input_id):
-    df = get_data()
-    # 입력값도 공백 제거하고 문자로 확실하게 변환
+    # 입퇴실 때도 최신 데이터 확인 필수
+    df = get_data(force_reload=True)
     target_id = str(input_id).strip()
     
-    # 데이터프레임에서 찾기
     mask = df['student_id'] == target_id
     
     if not mask.any():
-        st.error(f"등록되지 않은 비밀번호입니다. (입력값: {target_id})")
+        st.error(f"등록되지 않은 비밀번호입니다.")
         return
 
     idx = df[mask].index[0]
@@ -180,7 +205,9 @@ if mode == "📺 대시보드 모드 (모니터용)":
     if os.path.exists("image_0.png"):
         st.image("image_0.png", use_container_width=True)
     
-    df = get_data()
+    # 대시보드는 평소에 API 안 부르고 캐시된거 쓰다가 15초마다 갱신 (force_reload=False)
+    df = get_data(force_reload=False)
+    
     if not df.empty:
         now = datetime.now()
         real_daily, real_monthly = [], []
@@ -192,6 +219,8 @@ if mode == "📺 대시보드 모드 (모니터용)":
                     st_t = str(row['start_time'])
                     try: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S.%f")
                     except: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S")
+                    
+                    # 여기서 실시간 시간 계산은 Python이 하므로 API 안 씀
                     elapsed = (now - s_dt).total_seconds()
                     d += elapsed
                 except: pass
@@ -239,7 +268,7 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
             if st.form_submit_button("확인", type="primary", use_container_width=True):
                 if student_id:
                     check_in_out(student_id)
-                    time.sleep(0.5)
+                    time.sleep(1) # 처리 대기
                     st.rerun()
 
     with c2:
@@ -254,7 +283,7 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
                 if st.button("등록하기", use_container_width=True):
                     if new_name and new_student_id:
                         register_student(new_name, new_student_id)
-                        time.sleep(0.5)
+                        time.sleep(1) # 처리 대기
                         st.rerun()
         elif admin_pw:
             st.error("비밀번호가 틀렸습니다.")
