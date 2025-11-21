@@ -18,7 +18,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ---------------------------------------------------------
 
 def get_data():
-    """구글 시트 데이터 읽기 (캐시 5초)"""
+    """구글 시트 데이터 읽기 (데이터 정제 로직 추가됨)"""
     try:
         df = conn.read(ttl=5)
         if df.empty or len(df.columns) < 7:
@@ -27,13 +27,19 @@ def get_data():
                 "is_active", "start_time", "last_update"
             ])
         
+        # 1. 숫자 계산용 컬럼 변환
         df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
         df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
         df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
-        df['phone'] = df['phone'].astype(str)
+        
+        # 2. [핵심 수정] 전화번호 데이터 정제 (1234.0 -> 1234)
+        df['phone'] = df['phone'].astype(str) # 문자로 변환
+        df['phone'] = df['phone'].str.replace(r'\.0$', '', regex=True) # 소수점 제거
+        df['phone'] = df['phone'].str.strip() # 공백 제거
         
         return df
     except Exception as e:
+        st.error(f"데이터 로드 중 오류 발생: {e}")
         return pd.DataFrame()
 
 def update_sheet(df):
@@ -75,14 +81,18 @@ def check_date_reset():
 # 3. 핵심 기능
 # ---------------------------------------------------------
 def register_student(name, phone):
+    # 입력받은 전화번호 공백 제거
+    clean_phone = str(phone).strip()
+    
     df = get_data()
-    if not df.empty and str(phone) in df['phone'].values:
-        st.warning("이미 등록된 번호입니다.")
+    # 비교 시에도 공백이 제거된 데이터끼리 비교
+    if not df.empty and clean_phone in df['phone'].values:
+        st.warning(f"이미 등록된 번호입니다: {clean_phone}")
         return
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     new_data = pd.DataFrame([{
-        "phone": str(phone), "name": name, "daily_seconds": 0, 
+        "phone": clean_phone, "name": name, "daily_seconds": 0, 
         "monthly_seconds": 0, "is_active": 0, "start_time": None, "last_update": today_str
     }])
     
@@ -91,11 +101,14 @@ def register_student(name, phone):
     st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
 
 def check_in_out(phone):
+    # 입력받은 전화번호 공백 제거
+    clean_phone = str(phone).strip()
+    
     df = get_data()
-    mask = df['phone'] == str(phone)
+    mask = df['phone'] == clean_phone
     
     if not mask.any():
-        st.error("등록되지 않은 번호입니다. 관리자에게 문의하세요.")
+        st.error(f"등록되지 않은 번호입니다 ({clean_phone}). 관리자에게 문의하세요.")
         return
 
     idx = df[mask].index[0]
@@ -115,7 +128,7 @@ def check_in_out(phone):
             st_time = str(row['start_time'])
             try: start_dt = datetime.strptime(st_time, "%Y-%m-%d %H:%M:%S.%f")
             except: start_dt = datetime.strptime(st_time, "%Y-%m-%d %H:%M:%S")
-                
+            
             duration = (now - start_dt).seconds
             df.at[idx, 'daily_seconds'] += duration
             df.at[idx, 'is_active'] = 0
@@ -225,7 +238,6 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
 
     with c2:
         st.subheader("🔒 신규 학생 등록 (관리자)")
-        # 비밀번호 검사 로직
         admin_pw = st.text_input("관리자 비밀번호 입력", type="password")
         
         if "admin_password" in st.secrets and admin_pw == st.secrets["admin_password"]:
