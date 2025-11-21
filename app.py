@@ -18,7 +18,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # ---------------------------------------------------------
 
 def get_data():
-    """구글 시트 데이터 읽기 (데이터 정제 로직 추가됨)"""
+    """구글 시트 데이터 읽기"""
     try:
         df = conn.read(ttl=5)
         if df.empty or len(df.columns) < 7:
@@ -27,27 +27,25 @@ def get_data():
                 "is_active", "start_time", "last_update"
             ])
         
-        # 1. 숫자 계산용 컬럼 변환
         df['daily_seconds'] = pd.to_numeric(df['daily_seconds'], errors='coerce').fillna(0)
         df['monthly_seconds'] = pd.to_numeric(df['monthly_seconds'], errors='coerce').fillna(0)
         df['is_active'] = pd.to_numeric(df['is_active'], errors='coerce').fillna(0)
         
-        # 2. [핵심 수정] 전화번호 데이터 정제 (1234.0 -> 1234)
-        df['phone'] = df['phone'].astype(str) # 문자로 변환
-        df['phone'] = df['phone'].str.replace(r'\.0$', '', regex=True) # 소수점 제거
-        df['phone'] = df['phone'].str.strip() # 공백 제거
+        # 전화번호 정제
+        df['phone'] = df['phone'].astype(str)
+        df['phone'] = df['phone'].str.replace(r'\.0$', '', regex=True)
+        df['phone'] = df['phone'].str.strip()
         
         return df
     except Exception as e:
-        st.error(f"데이터 로드 중 오류 발생: {e}")
+        # 에러 발생 시 화면에 표시하지 않고 빈 데이터 반환 (깜빡임 방지)
         return pd.DataFrame()
 
 def update_sheet(df):
-    """구글 시트 업데이트"""
     try:
         conn.update(data=df)
-    except Exception as e:
-        st.error(f"저장 중 오류: {e}")
+    except Exception:
+        pass
 
 def check_date_reset():
     """날짜 변경 시 초기화 로직"""
@@ -78,14 +76,12 @@ def check_date_reset():
         update_sheet(df)
 
 # ---------------------------------------------------------
-# 3. 핵심 기능
+# 3. 기능 함수
 # ---------------------------------------------------------
 def register_student(name, phone):
-    # 입력받은 전화번호 공백 제거
     clean_phone = str(phone).strip()
-    
     df = get_data()
-    # 비교 시에도 공백이 제거된 데이터끼리 비교
+    
     if not df.empty and clean_phone in df['phone'].values:
         st.warning(f"이미 등록된 번호입니다: {clean_phone}")
         return
@@ -101,14 +97,12 @@ def register_student(name, phone):
     st.toast(f"환영합니다, {name} 학생 등록 완료!", icon="🎉")
 
 def check_in_out(phone):
-    # 입력받은 전화번호 공백 제거
     clean_phone = str(phone).strip()
-    
     df = get_data()
     mask = df['phone'] == clean_phone
     
     if not mask.any():
-        st.error(f"등록되지 않은 번호입니다 ({clean_phone}). 관리자에게 문의하세요.")
+        st.error(f"등록되지 않은 번호입니다 ({clean_phone}).")
         return
 
     idx = df[mask].index[0]
@@ -141,13 +135,15 @@ def check_in_out(phone):
         except:
             df.at[idx, 'is_active'] = 0
             update_sheet(df)
-            st.error("오류가 있어 강제 퇴실 처리했습니다.")
+            st.error("오류 처리됨")
 
 # ---------------------------------------------------------
 # 4. UI 구성
 # ---------------------------------------------------------
+# 초기화 실행
 check_date_reset()
 
+# 스타일 정의 (루프 밖에서 한 번만 실행)
 st.markdown("""
     <style>
     .rank-card { 
@@ -169,58 +165,94 @@ with st.sidebar:
     st.write("---")
     st.caption("🔒 신규 등록은 관리자 비밀번호가 필요합니다.")
 
-# === 대시보드 모드 ===
+# ---------------------------------------------------------
+# 화면 분기
+# ---------------------------------------------------------
+
 if mode == "📺 대시보드 모드 (모니터용)":
+    # 로고는 루프 밖에서 한 번만 그립니다 (깜빡임 방지)
     if os.path.exists("image_0.png"):
         st.image("image_0.png", use_container_width=True)
     
-    df = get_data()
-    if not df.empty:
-        now = datetime.now()
-        real_daily, real_monthly = [], []
+    # === [핵심] 깜빡임 방지를 위한 빈 상자 생성 ===
+    dashboard_placeholder = st.empty()
+
+    # 무한 루프를 통해 상자 안의 내용만 갈아끼움 (rerun 사용 X)
+    while True:
+        # 1. 데이터 가져오기
+        df = get_data()
         
-        for idx, row in df.iterrows():
-            d, m = float(row['daily_seconds']), float(row['monthly_seconds'])
-            if row['is_active'] == 1 and pd.notna(row['start_time']):
-                try:
-                    st_t = str(row['start_time'])
-                    try: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S.%f")
-                    except: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S")
-                    elapsed = (now - s_dt).total_seconds()
-                    d += elapsed
-                except: pass
-            real_daily.append(d)
-            real_monthly.append(m + d)
+        # 2. 상자(Container) 안에서 UI 그리기
+        with dashboard_placeholder.container():
+            if not df.empty:
+                now = datetime.now()
+                real_daily, real_monthly = [], []
+                
+                # 시간 계산
+                for idx, row in df.iterrows():
+                    d, m = float(row['daily_seconds']), float(row['monthly_seconds'])
+                    if row['is_active'] == 1 and pd.notna(row['start_time']):
+                        try:
+                            st_t = str(row['start_time'])
+                            try: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S.%f")
+                            except: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S")
+                            elapsed = (now - s_dt).total_seconds()
+                            d += elapsed
+                        except: pass
+                    real_daily.append(d)
+                    real_monthly.append(m + d)
 
-        df['real_daily'] = real_daily
-        df['real_monthly'] = real_monthly
+                df['real_daily'] = real_daily
+                df['real_monthly'] = real_monthly
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("<div class='section-title'>☀️ 오늘의 공부왕 (Daily)</div>", unsafe_allow_html=True)
-            for i, r in df.sort_values(by='real_daily', ascending=False).reset_index(drop=True).iterrows():
-                if r['real_daily'] < 1: continue
-                rank = i + 1
-                ts = int(r['real_daily'])
-                emoji = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"{rank}위"
-                badge = f"<span class='status-active'>🔥 열공중</span>" if r['is_active'] else f"<span class='status-rest'>💤 휴식</span>"
-                st.markdown(f"""<div class="rank-card"><div><span class="big-emoji">{emoji}</span> <b>{r['name']}</b> {badge}</div><div style='font-family:monospace; color:#4CAF50;'>{ts//3600}h {(ts%3600)//60}m {ts%60:02d}s</div></div>""", unsafe_allow_html=True)
+                # 컬럼 그리기
+                c1, c2 = st.columns(2)
+                
+                with c1:
+                    st.markdown("<div class='section-title'>☀️ 오늘의 공부왕 (Daily)</div>", unsafe_allow_html=True)
+                    sorted_df = df.sort_values(by='real_daily', ascending=False).reset_index(drop=True)
+                    
+                    for i, r in sorted_df.iterrows():
+                        if r['real_daily'] < 1: continue
+                        
+                        rank = i + 1
+                        ts = int(r['real_daily'])
+                        emoji = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"{rank}위"
+                        badge = f"<span class='status-active'>🔥 열공중</span>" if r['is_active'] else f"<span class='status-rest'>💤 휴식</span>"
+                        
+                        st.markdown(f"""
+                        <div class="rank-card">
+                            <div><span class="big-emoji">{emoji}</span> <b>{r['name']}</b> {badge}</div>
+                            <div style='font-family:monospace; color:#4CAF50;'>
+                                {ts//3600}h {(ts%3600)//60}m {ts%60:02d}s
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-        with c2:
-            st.markdown("<div class='section-title'>📅 이달의 명예의 전당 (Monthly)</div>", unsafe_allow_html=True)
-            for i, r in df.sort_values(by='real_monthly', ascending=False).reset_index(drop=True).iterrows():
-                if r['real_monthly'] < 1: continue
-                rank = i + 1
-                ts = int(r['real_monthly'])
-                mark = "👑" if rank == 1 else f"{rank}."
-                bg = "rgba(255,215,0,0.1)" if rank == 1 else "transparent"
-                st.markdown(f"""<div style="padding:12px; border-bottom:1px solid #eee; background:{bg}; display:flex; justify-content:space-between;"><div><b>{mark}</b> {r['name']}</div><div>{ts//3600}시간 {(ts%3600)//60}분</div></div>""", unsafe_allow_html=True)
-    else:
-        st.info("등록된 학생이 없습니다.")
-    time.sleep(1)
-    st.rerun()
+                with c2:
+                    st.markdown("<div class='section-title'>📅 이달의 명예의 전당 (Monthly)</div>", unsafe_allow_html=True)
+                    sorted_monthly = df.sort_values(by='real_monthly', ascending=False).reset_index(drop=True)
+                    
+                    for i, r in sorted_monthly.iterrows():
+                        if r['real_monthly'] < 1: continue
+                        
+                        rank = i + 1
+                        ts = int(r['real_monthly'])
+                        mark = "👑" if rank == 1 else f"{rank}."
+                        bg = "rgba(255,215,0,0.1)" if rank == 1 else "transparent"
+                        
+                        st.markdown(f"""
+                        <div style="padding:12px; border-bottom:1px solid #eee; background:{bg}; display:flex; justify-content:space-between;">
+                            <div><b>{mark}</b> {r['name']}</div>
+                            <div>{ts//3600}시간 {(ts%3600)//60}분</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("등록된 학생 데이터가 없습니다.")
+        
+        # 3. 잠시 대기 (전체 리로딩 없음)
+        time.sleep(1)
 
-# === 출석체크 모드 ===
 elif mode == "✅ 출석체크 모드 (데스크용)":
     st.title("✅ OnEducation 데스크 관리")
     
