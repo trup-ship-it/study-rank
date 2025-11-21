@@ -216,7 +216,7 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
     with c1:
         st.subheader("👋 입실 / 퇴실 처리")
         with st.form("check_in"):
-            phone = st.text_input("전화번호 뒷자리 (4자리)", max_chars=4)
+            phone = st.text_input("비밀번호 (4자리)", max_chars=4)
             if st.form_submit_button("확인", type="primary", use_container_width=True):
                 if phone:
                     check_in_out(phone)
@@ -232,7 +232,7 @@ elif mode == "✅ 출석체크 모드 (데스크용)":
             st.success("관리자 인증 완료 ✨")
             with st.container(border=True):
                 new_name = st.text_input("학생 이름")
-                new_phone = st.text_input("전화번호 뒷자리", key="new_phone", max_chars=4)
+                new_phone = st.text_input("학생이 쓸 비밀번호", key="new_phone", max_chars=4)
                 if st.button("등록하기", use_container_width=True):
                     if new_name and new_phone:
                         register_student(new_name, new_phone)
