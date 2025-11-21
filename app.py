@@ -10,7 +10,7 @@ import os
 # ---------------------------------------------------------
 st.set_page_config(layout="wide", page_title="OnEducation Study Rank")
 
-# 구글 시트 연결 객체 생성
+# 구글 시트 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ---------------------------------------------------------
@@ -37,8 +37,7 @@ def get_data():
         df['phone'] = df['phone'].str.strip()
         
         return df
-    except Exception as e:
-        # 에러 발생 시 화면에 표시하지 않고 빈 데이터 반환 (깜빡임 방지)
+    except Exception:
         return pd.DataFrame()
 
 def update_sheet(df):
@@ -48,7 +47,7 @@ def update_sheet(df):
         pass
 
 def check_date_reset():
-    """날짜 변경 시 초기화 로직"""
+    """자정 초기화 로직"""
     df = get_data()
     if df.empty: return
 
@@ -140,10 +139,8 @@ def check_in_out(phone):
 # ---------------------------------------------------------
 # 4. UI 구성
 # ---------------------------------------------------------
-# 초기화 실행
 check_date_reset()
 
-# 스타일 정의 (루프 밖에서 한 번만 실행)
 st.markdown("""
     <style>
     .rank-card { 
@@ -156,6 +153,8 @@ st.markdown("""
     .status-rest { color: #888; font-weight: bold; border: 1px solid #888; padding: 2px 6px; border-radius: 5px; font-size: 0.7em; }
     .section-title { font-size: 1.5em; font-weight: bold; margin-top: 20px; margin-bottom: 15px; }
     .big-emoji { font-size: 1.2em; }
+    /* 스트림릿 기본 실행 애니메이션 숨기기 */
+    .stApp > header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -166,121 +165,17 @@ with st.sidebar:
     st.caption("🔒 신규 등록은 관리자 비밀번호가 필요합니다.")
 
 # ---------------------------------------------------------
-# 화면 분기
+# 화면 로직
 # ---------------------------------------------------------
 
 if mode == "📺 대시보드 모드 (모니터용)":
-    # 로고는 루프 밖에서 한 번만 그립니다 (깜빡임 방지)
-    if os.path.exists("image_0.png"):
-        st.image("image_0.png", use_container_width=True)
+    # [수정됨] 전체 화면을 감싸는 빈 상자를 먼저 만듭니다.
+    # 이 안에 이미지와 랭킹을 모두 넣어야 잔상이 남지 않습니다.
+    main_placeholder = st.empty()
     
-    # === [핵심] 깜빡임 방지를 위한 빈 상자 생성 ===
-    dashboard_placeholder = st.empty()
-
-    # 무한 루프를 통해 상자 안의 내용만 갈아끼움 (rerun 사용 X)
     while True:
-        # 1. 데이터 가져오기
+        # 데이터를 먼저 읽어옵니다
         df = get_data()
         
-        # 2. 상자(Container) 안에서 UI 그리기
-        with dashboard_placeholder.container():
-            if not df.empty:
-                now = datetime.now()
-                real_daily, real_monthly = [], []
-                
-                # 시간 계산
-                for idx, row in df.iterrows():
-                    d, m = float(row['daily_seconds']), float(row['monthly_seconds'])
-                    if row['is_active'] == 1 and pd.notna(row['start_time']):
-                        try:
-                            st_t = str(row['start_time'])
-                            try: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S.%f")
-                            except: s_dt = datetime.strptime(st_t, "%Y-%m-%d %H:%M:%S")
-                            elapsed = (now - s_dt).total_seconds()
-                            d += elapsed
-                        except: pass
-                    real_daily.append(d)
-                    real_monthly.append(m + d)
-
-                df['real_daily'] = real_daily
-                df['real_monthly'] = real_monthly
-
-                # 컬럼 그리기
-                c1, c2 = st.columns(2)
-                
-                with c1:
-                    st.markdown("<div class='section-title'>☀️ 오늘의 공부왕 (Daily)</div>", unsafe_allow_html=True)
-                    sorted_df = df.sort_values(by='real_daily', ascending=False).reset_index(drop=True)
-                    
-                    for i, r in sorted_df.iterrows():
-                        if r['real_daily'] < 1: continue
-                        
-                        rank = i + 1
-                        ts = int(r['real_daily'])
-                        emoji = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"{rank}위"
-                        badge = f"<span class='status-active'>🔥 열공중</span>" if r['is_active'] else f"<span class='status-rest'>💤 휴식</span>"
-                        
-                        st.markdown(f"""
-                        <div class="rank-card">
-                            <div><span class="big-emoji">{emoji}</span> <b>{r['name']}</b> {badge}</div>
-                            <div style='font-family:monospace; color:#4CAF50;'>
-                                {ts//3600}h {(ts%3600)//60}m {ts%60:02d}s
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                with c2:
-                    st.markdown("<div class='section-title'>📅 이달의 명예의 전당 (Monthly)</div>", unsafe_allow_html=True)
-                    sorted_monthly = df.sort_values(by='real_monthly', ascending=False).reset_index(drop=True)
-                    
-                    for i, r in sorted_monthly.iterrows():
-                        if r['real_monthly'] < 1: continue
-                        
-                        rank = i + 1
-                        ts = int(r['real_monthly'])
-                        mark = "👑" if rank == 1 else f"{rank}."
-                        bg = "rgba(255,215,0,0.1)" if rank == 1 else "transparent"
-                        
-                        st.markdown(f"""
-                        <div style="padding:12px; border-bottom:1px solid #eee; background:{bg}; display:flex; justify-content:space-between;">
-                            <div><b>{mark}</b> {r['name']}</div>
-                            <div>{ts//3600}시간 {(ts%3600)//60}분</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-            else:
-                st.info("등록된 학생 데이터가 없습니다.")
-        
-        # 3. 잠시 대기 (전체 리로딩 없음)
-        time.sleep(1)
-
-elif mode == "✅ 출석체크 모드 (데스크용)":
-    st.title("✅ OnEducation 데스크 관리")
-    
-    c1, c2 = st.columns([1, 1])
-    
-    with c1:
-        st.subheader("👋 입실 / 퇴실 처리")
-        with st.form("check_in"):
-            phone = st.text_input("전화번호 뒷자리 (4자리)", max_chars=4)
-            if st.form_submit_button("확인", type="primary", use_container_width=True):
-                if phone:
-                    check_in_out(phone)
-                    time.sleep(1)
-                    st.rerun()
-
-    with c2:
-        st.subheader("🔒 신규 학생 등록 (관리자)")
-        admin_pw = st.text_input("관리자 비밀번호 입력", type="password")
-        
-        if "admin_password" in st.secrets and admin_pw == st.secrets["admin_password"]:
-            st.success("관리자 인증 완료 ✨")
-            with st.container(border=True):
-                new_name = st.text_input("학생 이름")
-                new_phone = st.text_input("전화번호 뒷자리", key="new_phone", max_chars=4)
-                if st.button("등록하기", use_container_width=True):
-                    if new_name and new_phone:
-                        register_student(new_name, new_phone)
-                        time.sleep(1)
-                        st.rerun()
-        elif admin_pw:
-            st.error("비밀번호가 틀렸습니다.")
+        # 상자 안을 비우고 새로 그립니다
+        with main
